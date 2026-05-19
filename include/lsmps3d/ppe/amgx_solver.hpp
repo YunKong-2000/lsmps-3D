@@ -1,24 +1,19 @@
 #pragma once
 
-#include <string>
+#include "lsmps3d/core/config.hpp"
 
 namespace lsmps3d {
 
-struct AmgxSolverConfig {
-  std::string config_path{"configs/amgx_ppe.json"};
-  bool print_solve_stats{false};
-};
-
 class AmgxSolver {
  public:
-  explicit AmgxSolver(AmgxSolverConfig config);
+  explicit AmgxSolver(SimulationConfig config);
   ~AmgxSolver();
 
   AmgxSolver(const AmgxSolver&) = delete;
   AmgxSolver& operator=(const AmgxSolver&) = delete;
 
  private:
-  AmgxSolverConfig config_{};
+  SimulationConfig config_{};
 };
 
 }  // namespace lsmps3d

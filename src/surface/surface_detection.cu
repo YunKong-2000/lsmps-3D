@@ -152,7 +152,7 @@ __device__ WallBasis build_wall_basis(size_type i,
                                       const FluidParticleSoA& fluid,
                                       const WallParticleSoA& walls,
                                       const NeighborListView& wall_neighbors,
-                                      const SurfaceDetectionConfig& config) {
+                                      const SimulationConfig& config) {
   WallBasis basis{};
   if (!config.include_wall_neighbors) {
     return basis;
@@ -200,7 +200,8 @@ __global__ void classify_primary_surface_kernel(const FluidParticleSoA fluid,
                                                 const WallParticleSoA walls,
                                                 const NeighborListView fluid_neighbors,
                                                 const NeighborListView wall_neighbors,
-                                                const SurfaceDetectionConfig config,
+                                                const SimulationConfig config,
+                                                real reference_number_density,
                                                 SurfaceDetectionDiagnosticsView diagnostics) {
   const size_type i = static_cast<size_type>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= fluid.count) {
@@ -237,7 +238,7 @@ __global__ void classify_primary_surface_kernel(const FluidParticleSoA fluid,
   if (weighted_count > 0) {
     anisotropy = sqrt(sx * sx + sy * sy + sz * sz) / static_cast<real>(weighted_count);
   }
-  const real number_density_ratio = number_density / config.reference_number_density;
+  const real number_density_ratio = number_density / reference_number_density;
 
   const real missing_x = -sx;
   const real missing_y = -sy;
@@ -384,7 +385,7 @@ __device__ bool fluid_neighbor_blocks_light(size_type i,
                                             int direction_index,
                                             const FluidParticleSoA& fluid,
                                             const NeighborListView& neighbors,
-                                            const VirtualLightConfig& config) {
+                                            const SimulationConfig& config) {
   const Vec3 dir = virtual_light_direction(direction_index);
   const real px = fluid.x[i];
   const real py = fluid.y[i];
@@ -402,7 +403,7 @@ __device__ bool fluid_neighbor_blocks_light(size_type i,
     }
 
     const real projection = (dx * dir.x + dy * dir.y + dz * dir.z) * safe_rsqrt(distance_squared);
-    if (projection >= config.cone_cosine) {
+    if (projection >= config.virtual_light_cone_cosine) {
       return true;
     }
   }
@@ -415,7 +416,7 @@ __device__ bool wall_neighbor_blocks_light(size_type i,
                                            const FluidParticleSoA& fluid,
                                            const WallParticleSoA& walls,
                                            const NeighborListView& neighbors,
-                                           const VirtualLightConfig& config) {
+                                           const SimulationConfig& config) {
   const Vec3 dir = virtual_light_direction(direction_index);
   const real px = fluid.x[i];
   const real py = fluid.y[i];
@@ -433,7 +434,7 @@ __device__ bool wall_neighbor_blocks_light(size_type i,
     }
 
     const real projection = (dx * dir.x + dy * dir.y + dz * dir.z) * safe_rsqrt(distance_squared);
-    if (projection >= config.cone_cosine) {
+    if (projection >= config.virtual_light_cone_cosine) {
       return true;
     }
   }
@@ -445,7 +446,7 @@ __global__ void virtual_light_kernel(const FluidParticleSoA fluid,
                                      const WallParticleSoA walls,
                                      const NeighborListView fluid_neighbors,
                                      const NeighborListView wall_neighbors,
-                                     const VirtualLightConfig config,
+                                     const SimulationConfig config,
                                      const VirtualLightDiagnosticsView diagnostics) {
   const size_type i = static_cast<size_type>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= fluid.count) {
@@ -522,19 +523,16 @@ void classify_surface_particles(const FluidParticleSoA& fluid,
                                 const WallParticleSoA& walls,
                                 const NeighborListView& fluid_neighbors,
                                 const NeighborListView& wall_neighbors,
-                                const SurfaceDetectionConfig& config,
+                                const SimulationConfig& config,
                                 SurfaceDetectionDiagnosticsView diagnostics) {
   validate_surface_inputs(fluid, fluid_neighbors, wall_neighbors, config.support_radius);
   if (config.near_surface_radius < static_cast<real>(0)) {
     std::cerr << "Near-surface radius must be non-negative" << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  SurfaceDetectionConfig effective_config = config;
-  if (effective_config.reference_number_density <= static_cast<real>(0)) {
-    effective_config.reference_number_density =
-        compute_uniform_reference_number_density(config.particle_spacing, config.support_radius);
-  }
-  if (effective_config.reference_number_density <= static_cast<real>(0)) {
+  const real reference_number_density =
+      compute_uniform_reference_number_density(config.particle_spacing, config.support_radius);
+  if (reference_number_density <= static_cast<real>(0)) {
     std::cerr << "Reference number density must be positive" << std::endl;
     std::exit(EXIT_FAILURE);
   }
@@ -543,7 +541,7 @@ void classify_surface_particles(const FluidParticleSoA& fluid,
   }
 
   classify_primary_surface_kernel<<<block_count(fluid.count), kThreadsPerBlock>>>(
-      fluid, walls, fluid_neighbors, wall_neighbors, effective_config, diagnostics);
+      fluid, walls, fluid_neighbors, wall_neighbors, config, reference_number_density, diagnostics);
   LSMPS3D_CUDA_KERNEL_CHECK();
 
   if (config.near_surface_radius > static_cast<real>(0)) {
@@ -558,11 +556,11 @@ void compute_virtual_light_diagnostics(const FluidParticleSoA& fluid,
                                        const WallParticleSoA& walls,
                                        const NeighborListView& fluid_neighbors,
                                        const NeighborListView& wall_neighbors,
-                                       const VirtualLightConfig& config,
+                                       const SimulationConfig& config,
                                        VirtualLightDiagnosticsView diagnostics) {
   validate_surface_inputs(fluid, fluid_neighbors, wall_neighbors, config.support_radius);
-  if (config.cone_cosine < static_cast<real>(-1) ||
-      config.cone_cosine > static_cast<real>(1)) {
+  if (config.virtual_light_cone_cosine < static_cast<real>(-1) ||
+      config.virtual_light_cone_cosine > static_cast<real>(1)) {
     std::cerr << "Virtual light cone cosine must be in [-1, 1]" << std::endl;
     std::exit(EXIT_FAILURE);
   }

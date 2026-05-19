@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lsmps3d/core/config.hpp"
 #include "lsmps3d/core/types.cuh"
 
 #include <filesystem>
@@ -7,12 +8,6 @@
 #include <vector>
 
 namespace lsmps3d {
-
-struct VtkWriterConfig {
-  std::filesystem::path output_directory{"output"};
-  std::string file_prefix{"lsmps3d"};
-  bool write_point_fields{true};
-};
 
 struct HostParticleSnapshot {
   std::vector<real> x;
@@ -54,7 +49,7 @@ struct HostVtkPointFields {
 
 class LegacyVtkWriter {
  public:
-  explicit LegacyVtkWriter(VtkWriterConfig config = {});
+  explicit LegacyVtkWriter(SimulationConfig config = {});
 
   [[nodiscard]] std::filesystem::path make_path(size_type step) const;
 
@@ -63,7 +58,7 @@ class LegacyVtkWriter {
              const HostVtkPointFields& point_fields = {}) const;
 
  private:
-  VtkWriterConfig config_{};
+  SimulationConfig config_{};
 };
 
 }  // namespace lsmps3d

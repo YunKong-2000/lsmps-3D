@@ -295,7 +295,8 @@ template <typename SourceParticles>
 void build_one_neighbor_list(const FluidParticleSoA& fluid,
                              const SourceParticles& source,
                              const CellListView& source_cells,
-                             const NeighborSearchConfig& config,
+                             const CellGrid& grid,
+                             real radius,
                              bool exclude_self,
                              NeighborListView neighbors) {
   if (fluid.count > neighbors.particle_count) {
@@ -303,7 +304,7 @@ void build_one_neighbor_list(const FluidParticleSoA& fluid,
     std::exit(EXIT_FAILURE);
   }
 
-  const real radius_squared = config.radius * config.radius;
+  const real radius_squared = radius * radius;
   if (fluid.count == 0) {
     index_t zero = 0;
     LSMPS3D_CUDA_CHECK(
@@ -312,7 +313,7 @@ void build_one_neighbor_list(const FluidParticleSoA& fluid,
   }
 
   count_neighbors_kernel<<<block_count(fluid.count), kThreadsPerBlock>>>(
-      fluid, source, source_cells, config.grid, radius_squared, exclude_self, neighbors);
+      fluid, source, source_cells, grid, radius_squared, exclude_self, neighbors);
   LSMPS3D_CUDA_KERNEL_CHECK();
 
   thrust::device_ptr<index_t> offsets(neighbors.offsets);
@@ -327,7 +328,7 @@ void build_one_neighbor_list(const FluidParticleSoA& fluid,
   require_neighbor_capacity(neighbors, static_cast<size_type>(required));
 
   write_neighbors_kernel<<<block_count(fluid.count), kThreadsPerBlock>>>(
-      fluid, source, source_cells, config.grid, radius_squared, exclude_self, neighbors);
+      fluid, source, source_cells, grid, radius_squared, exclude_self, neighbors);
   LSMPS3D_CUDA_KERNEL_CHECK();
 }
 
@@ -343,24 +344,26 @@ void build_cell_list(const WallParticleSoA& particles, const CellGrid& grid, Cel
 
 void build_neighbor_lists(const FluidParticleSoA& fluid,
                           const WallParticleSoA& walls,
-                          const NeighborSearchConfig& config,
+                          const SimulationConfig& config,
                           CellListView fluid_cells,
                           CellListView wall_cells,
                           NeighborListView fluid_neighbors,
                           NeighborListView wall_neighbors) {
-  if (config.radius <= static_cast<real>(0)) {
+  const CellGrid grid = config.cell_grid();
+  const real radius = config.neighbor_radius();
+  if (radius <= static_cast<real>(0)) {
     std::cerr << "Neighbor search radius must be positive" << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  if (config.radius > config.grid.cell_size) {
+  if (radius > grid.cell_size) {
     std::cerr << "Neighbor search currently requires radius <= cell_size" << std::endl;
     std::exit(EXIT_FAILURE);
   }
 
-  build_cell_list(fluid, config.grid, fluid_cells);
-  build_cell_list(walls, config.grid, wall_cells);
-  build_one_neighbor_list(fluid, fluid, fluid_cells, config, true, fluid_neighbors);
-  build_one_neighbor_list(fluid, walls, wall_cells, config, false, wall_neighbors);
+  build_cell_list(fluid, grid, fluid_cells);
+  build_cell_list(walls, grid, wall_cells);
+  build_one_neighbor_list(fluid, fluid, fluid_cells, grid, radius, true, fluid_neighbors);
+  build_one_neighbor_list(fluid, walls, wall_cells, grid, radius, false, wall_neighbors);
 }
 
 }  // namespace lsmps3d

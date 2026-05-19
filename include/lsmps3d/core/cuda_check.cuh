@@ -19,14 +19,14 @@ inline void cuda_check(cudaError_t status, const char* expression, const char* f
   std::exit(EXIT_FAILURE);
 }
 
-template <typename Status>
+template <typename Status, typename Success>
 inline void generic_check(Status status,
-                          Status success,
+                          Success success,
                           const char* api_name,
                           const char* expression,
                           const char* file,
                           int line) {
-  if (status == success) {
+  if (static_cast<int>(status) == static_cast<int>(success)) {
     return;
   }
 

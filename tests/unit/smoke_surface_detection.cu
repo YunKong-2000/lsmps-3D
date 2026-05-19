@@ -123,19 +123,25 @@ int main() {
   copy_to_device(view.walls.y, wall_y);
   copy_to_device(view.walls.z, wall_z);
 
-  const lsmps3d::NeighborSearchConfig neighbor_config{
-      lsmps3d::CellGrid{
-          lsmps3d::Vec3{static_cast<lsmps3d::real>(0.0),
-                        static_cast<lsmps3d::real>(0.0),
-                        static_cast<lsmps3d::real>(0.0)},
-          static_cast<lsmps3d::real>(1.0),
-          lsmps3d::Int3{4, 4, 4},
-      },
-      static_cast<lsmps3d::real>(0.75),
-  };
+  lsmps3d::SimulationConfig config;
+  config.cell_origin = lsmps3d::Vec3{static_cast<lsmps3d::real>(0.0),
+                                     static_cast<lsmps3d::real>(0.0),
+                                     static_cast<lsmps3d::real>(0.0)};
+  config.cell_size = static_cast<lsmps3d::real>(1.0);
+  config.cell_dims = lsmps3d::Int3{4, 4, 4};
+  config.support_radius = static_cast<lsmps3d::real>(0.75);
+  config.near_surface_radius = static_cast<lsmps3d::real>(0.75);
+  config.particle_spacing = static_cast<lsmps3d::real>(0.6);
+  config.splash_neighbor_threshold = 2;
+  config.number_density_ratio_threshold = static_cast<lsmps3d::real>(0.75);
+  config.air_open_ratio_threshold = static_cast<lsmps3d::real>(0.10);
+  config.air_anisotropy_threshold = static_cast<lsmps3d::real>(0.12);
+  config.include_wall_neighbors = true;
+  config.wall_normal_independence_threshold = static_cast<lsmps3d::real>(0.25);
+  config.virtual_light_cone_cosine = static_cast<lsmps3d::real>(0.8660254);
   lsmps3d::build_neighbor_lists(view.fluid,
                                 view.walls,
-                                neighbor_config,
+                                config,
                                 view.fluid_cells,
                                 view.wall_cells,
                                 view.fluid_neighbors,
@@ -146,21 +152,9 @@ int main() {
   auto diagnostic_fluid = diagnostics.view();
   auto diagnostic_neighbors = diagnostic_counts.view();
 
-  const lsmps3d::SurfaceDetectionConfig surface_config{
-      static_cast<lsmps3d::real>(0.75),
-      static_cast<lsmps3d::real>(0.75),
-      static_cast<lsmps3d::real>(0.6),
-      static_cast<lsmps3d::real>(0.0),
-      2,
-      static_cast<lsmps3d::real>(0.75),
-      static_cast<lsmps3d::real>(0.10),
-      static_cast<lsmps3d::real>(0.12),
-      true,
-      static_cast<lsmps3d::real>(0.25),
-  };
   const lsmps3d::real reference_number_density =
-      lsmps3d::compute_uniform_reference_number_density(surface_config.particle_spacing,
-                                                        surface_config.support_radius);
+      lsmps3d::compute_uniform_reference_number_density(config.particle_spacing,
+                                                        config.support_radius);
   if (reference_number_density <= static_cast<lsmps3d::real>(0)) {
     std::cerr << "invalid reference number density" << std::endl;
     return 1;
@@ -181,7 +175,7 @@ int main() {
                                       view.walls,
                                       view.fluid_neighbors,
                                       view.wall_neighbors,
-                                      surface_config,
+                                      config,
                                       surface_diagnostics);
 
   std::vector<int> surface_types(kFluidCount);
@@ -243,11 +237,6 @@ int main() {
 
   lsmps3d::DeviceFluidParticles virtual_light_buffers(kFluidCount);
   auto virtual_light_view = virtual_light_buffers.view();
-  const lsmps3d::VirtualLightConfig light_config{
-      static_cast<lsmps3d::real>(0.75),
-      static_cast<lsmps3d::real>(0.8660254),
-      true,
-  };
   const lsmps3d::VirtualLightDiagnosticsView light_diagnostics{
       virtual_light_view.surface_type,
       virtual_light_view.x,
@@ -256,7 +245,7 @@ int main() {
                                              view.walls,
                                              view.fluid_neighbors,
                                              view.wall_neighbors,
-                                             light_config,
+                                             config,
                                              light_diagnostics);
 
   std::vector<int> open_direction_count(kFluidCount);

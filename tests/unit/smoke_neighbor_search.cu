@@ -122,16 +122,13 @@ int main() {
   LSMPS3D_CUDA_CHECK(cudaMemcpy(
       view.walls.z, wall_z.data(), wall_z.size() * sizeof(lsmps3d::real), cudaMemcpyHostToDevice));
 
-  const lsmps3d::NeighborSearchConfig config{
-      lsmps3d::CellGrid{
-          lsmps3d::Vec3{static_cast<lsmps3d::real>(0.0),
-                        static_cast<lsmps3d::real>(0.0),
-                        static_cast<lsmps3d::real>(0.0)},
-          static_cast<lsmps3d::real>(1.0),
-          lsmps3d::Int3{3, 3, 3},
-      },
-      static_cast<lsmps3d::real>(0.75),
-  };
+  lsmps3d::SimulationConfig config;
+  config.cell_origin = lsmps3d::Vec3{static_cast<lsmps3d::real>(0.0),
+                                     static_cast<lsmps3d::real>(0.0),
+                                     static_cast<lsmps3d::real>(0.0)};
+  config.cell_size = static_cast<lsmps3d::real>(1.0);
+  config.cell_dims = lsmps3d::Int3{3, 3, 3};
+  config.support_radius = static_cast<lsmps3d::real>(0.75);
 
   lsmps3d::build_neighbor_lists(view.fluid,
                                 view.walls,

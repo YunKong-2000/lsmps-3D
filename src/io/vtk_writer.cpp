@@ -78,11 +78,11 @@ void HostVtkPointFields::add_vector(std::string name,
   });
 }
 
-LegacyVtkWriter::LegacyVtkWriter(VtkWriterConfig config) : config_(std::move(config)) {}
+LegacyVtkWriter::LegacyVtkWriter(SimulationConfig config) : config_(std::move(config)) {}
 
 std::filesystem::path LegacyVtkWriter::make_path(size_type step) const {
   std::ostringstream name;
-  name << config_.file_prefix << '_' << std::setw(6) << std::setfill('0') << step << ".vtk";
+  name << config_.vtk_file_prefix << '_' << std::setw(6) << std::setfill('0') << step << ".vtk";
   return config_.output_directory / name.str();
 }
 
@@ -135,7 +135,7 @@ void LegacyVtkWriter::write(size_type step,
   }
 
   out << "POINT_DATA " << count << '\n';
-  if (config_.write_point_fields) {
+  if (config_.vtk_write_point_fields) {
     for (const auto& vector : point_fields.vectors) {
       write_vector_field(out, vector, count);
     }

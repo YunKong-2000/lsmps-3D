@@ -30,7 +30,11 @@ int main() {
   const auto output_dir = std::filesystem::temp_directory_path() / "lsmps3d_vtk_writer_smoke";
   std::filesystem::remove_all(output_dir);
 
-  const lsmps3d::LegacyVtkWriter writer({output_dir, "particles", true});
+  lsmps3d::SimulationConfig config;
+  config.output_directory = output_dir;
+  config.vtk_file_prefix = "particles";
+  config.vtk_write_point_fields = true;
+  const lsmps3d::LegacyVtkWriter writer(config);
   const lsmps3d::HostParticleSnapshot particles{
       {0.0F, 1.0F, 0.0F},
       {0.0F, 0.0F, 1.0F},
