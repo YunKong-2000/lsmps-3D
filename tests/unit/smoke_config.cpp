@@ -33,15 +33,14 @@ int main() {
           << "particle_spacing = 0.02\n"
           << "support_radius = 0.062\n"
           << "near_surface_radius = 0.04\n"
-          << "cell_origin_x = -0.062\n"
-          << "cell_origin_y = -0.062\n"
-          << "cell_origin_z = -0.062\n"
-          << "cell_size = 0.062\n"
-          << "cell_dim_x = 16\n"
-          << "cell_dim_y = 8\n"
-          << "cell_dim_z = 4\n\n"
+          << "cell_size = 0.062\n\n"
           << "[simulation]\n"
           << "time_step = 0.0005\n"
+          << "min_time_step = 0.0001\n"
+          << "max_time_step = 0.002\n"
+          << "time_step_growth_factor = 1.2\n"
+          << "final_time = 0.5\n"
+          << "output_interval = 0.05\n"
           << "density = 998\n"
           << "kinematic_viscosity = 0.0000011\n"
           << "cfl = 0.25\n"
@@ -56,6 +55,12 @@ int main() {
           << "[lsmps]\n"
           << "regularization = 0.000000001\n"
           << "wall_weight_scale = 0.75\n\n"
+          << "[correction]\n"
+          << "ps_displacement_scale = 0.02\n"
+          << "ps_min_distance_ratio = 0.8\n"
+          << "ps_max_displacement_ratio = 0.15\n"
+          << "wall_clearance_ratio = 0.3\n"
+          << "velocity_smoothing_strength = 0.05\n\n"
           << "[files]\n"
           << "output_directory = /tmp/lsmps3d_output\n"
           << "vtk_file_prefix = smoke\n"
@@ -67,10 +72,17 @@ int main() {
   const lsmps3d::SimulationConfig loaded = lsmps3d::load_simulation_config(input_path);
   if (!almost_equal(loaded.particle_spacing, static_cast<lsmps3d::real>(0.02)) ||
       !almost_equal(loaded.support_radius, static_cast<lsmps3d::real>(0.062)) ||
-      loaded.cell_dims.x != 16 || loaded.cell_dims.y != 8 || loaded.cell_dims.z != 4 ||
-      loaded.cell_capacity() != 512 || loaded.vtk_write_point_fields ||
+      !almost_equal(loaded.cell_size, static_cast<lsmps3d::real>(0.062)) ||
+      loaded.vtk_write_point_fields ||
       !loaded.amgx_print_solve_stats || loaded.vtk_file_prefix != "smoke" ||
-      loaded.amgx_config_path != "configs/custom.json") {
+      loaded.amgx_config_path != "configs/custom.json" ||
+      !almost_equal(loaded.min_time_step, static_cast<lsmps3d::real>(0.0001)) ||
+      !almost_equal(loaded.max_time_step, static_cast<lsmps3d::real>(0.002)) ||
+      !almost_equal(loaded.time_step_growth_factor, static_cast<lsmps3d::real>(1.2)) ||
+      !almost_equal(loaded.final_time, static_cast<lsmps3d::real>(0.5)) ||
+      !almost_equal(loaded.output_interval, static_cast<lsmps3d::real>(0.05)) ||
+      !almost_equal(loaded.ps_displacement_scale, static_cast<lsmps3d::real>(0.02)) ||
+      !almost_equal(loaded.velocity_smoothing_strength, static_cast<lsmps3d::real>(0.05))) {
     std::cerr << "Loaded simulation config does not match expected overrides" << std::endl;
     return 1;
   }
@@ -90,6 +102,16 @@ int main() {
   try {
     lsmps3d::validate_simulation_config(invalid);
     std::cerr << "Invalid simulation config was accepted" << std::endl;
+    return 1;
+  } catch (const std::invalid_argument&) {
+  }
+
+  invalid = defaults;
+  invalid.min_time_step = static_cast<lsmps3d::real>(0.01);
+  invalid.max_time_step = static_cast<lsmps3d::real>(0.001);
+  try {
+    lsmps3d::validate_simulation_config(invalid);
+    std::cerr << "Invalid time step limits were accepted" << std::endl;
     return 1;
   } catch (const std::invalid_argument&) {
   }

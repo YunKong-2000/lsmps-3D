@@ -96,20 +96,14 @@
 - CUDA libraries used or considered: No new CUDA or third-party dependency is used. Configuration parsing is host-side C++17 with standard library streams and filesystem paths.
 - Memory strategy: The configuration module owns no GPU memory and performs no hidden device allocation. Modules read scalar settings from `SimulationConfig` before launching kernels or constructing reusable workspaces.
 - Data layout: Particle and diagnostic SoA layouts are unchanged. Configuration is scalar host state; single-phase density remains a global simulation parameter, not a per-particle field.
-- File format: Config files use fixed INI sections with simple `key=value` entries. Missing keys keep code defaults, unknown keys fail fast, and saved files are emitted in a stable order.
+- File format: Config files use fixed INI sections with simple `key=value` entries. Missing keys keep code defaults, unknown keys fail fast, and saved files are emitted in a stable order. The simulation driver derives `cell_origin` and `cell_dim` from the loaded particle coordinates and `cell_size`, so those grid bounds no longer need to be hand-written in the runtime configuration.
 - Example:
 
 ```ini
 [geometry]
 particle_spacing=0.02
 support_radius=0.062
-cell_origin_x=-0.062
-cell_origin_y=-0.062
-cell_origin_z=-0.062
 cell_size=0.062
-cell_dim_x=64
-cell_dim_y=64
-cell_dim_z=64
 
 [simulation]
 time_step=0.0001
@@ -129,3 +123,59 @@ amgx_config_path=configs/amgx_ppe.json
 
 - Tests: `smoke_config` validates defaults, overrides, validation failures, unknown-key failures, and save/load round-tripping. Existing neighbor, surface, LSMPS, and VTK tests now pass one `SimulationConfig` instead of constructing module-specific parameter structs.
 - Review notes: The first file format deliberately avoids nested includes, profile selection, expression evaluation, and unit parsing so configuration remains easy to read and diff.
+
+## Stage 8 Pressure Correction Summary
+
+- Changed: Added the correction module for negative-pressure clamping, LSMPS pressure-gradient evaluation, pressure velocity correction, PS displacement, wall anti-penetration, trapezoidal position update, and final neighbor velocity smoothing.
+- Reason: The solver now has the final projection-and-motion stage after PPE pressure solve, so particle velocity and position updates are centralized instead of being spread across provision or PPE code.
+- CUDA libraries used or considered: CUDA Runtime kernels are used because each step is a per-particle CSR traversal or vector update. Existing `DeviceMomentMatrix` pressure Type-A inverses are reused for gradients; no new third-party dependency is required.
+- Memory strategy: `DeviceCorrectionWorkspace` owns reusable SoA buffers for pressure gradients, PS displacements, and smoothed velocities. Callers allocate particle, neighbor, pressure, and temporary velocity buffers outside the timestep hot path.
+- Data layout: All correction diagnostics and outputs use SoA arrays. Pressure can come from the PPE workspace or the fluid pressure field; clamping also mirrors into `fluid.pressure` when it is a separate buffer.
+- Mathematical formulation: The pressure correction uses `u = u* - dt / rho * grad(p)` for non-splash particles. Positions use trapezoidal integration `x += 0.5 dt (u_old + u_new) + delta_x_ps`. PS displacement repels overly close fluid neighbors, applies wall-normal clearance near walls, projects free-surface displacement to the local tangent direction when a surface normal can be inferred, and caps displacement by a configurable particle-spacing ratio. Final velocity smoothing blends each non-splash velocity with a weighted neighbor average.
+- Tests: `smoke_pressure_correction` validates a linear pressure field gradient, velocity correction, trapezoidal position update, and workspace byte accounting.
+- Review notes: The first PS and anti-penetration policy is conservative and local. Production free-surface cases will still need coefficient calibration and diagnostics for wall normals, displacement magnitude, and smoothing strength.
+
+## Stage 9 Dynamic Time Step Summary
+
+- Changed: Added a host-side `SimulationTimeManager` and extended `SimulationConfig` with minimum/maximum time step, growth factor, final simulation time, and output interval settings.
+- Reason: The solver loop needs one independent module to advance variable simulation time, clamp time steps by CFL and user limits, trigger output frames, and stop exactly at the requested final time.
+- CUDA libraries used or considered: No CUDA library is needed because the manager consumes the correction stage's scalar maximum velocity and owns no device data.
+- Memory strategy: The module is scalar host state only. It performs no allocation and introduces no hidden work in timestep kernels.
+- Data layout: Existing particle SoA layouts are unchanged. The module exchanges only `real` scalars and a `TimeStepStatus` value with the simulation driver.
+- Mathematical formulation: The next step is `dt = clamp(min(growth_factor * dt_previous, cfl * particle_spacing / max_velocity), min_time_step, max_time_step)`, then clipped to the remaining final-time interval. Zero or non-finite maximum velocity leaves CFL non-restrictive.
+- Tests: `smoke_time_step` validates initial output behavior, growth-limited steps, CFL-limited steps, minimum clamp behavior, final-time clipping, and invalid limit rejection. `smoke_config` now covers the new INI fields and validation.
+- Review notes: The correction module still needs to publish the maximum velocity scalar to the driver before each `advance(...)` call.
+
+## Stage 10 File Management Summary
+
+- Changed: Added `FileManager`, host-side fluid/wall particle input containers, CSV preprocessing input readers, and result-output helpers that wrap the existing legacy VTK writer.
+- Reason: The simulation driver needs one file-management boundary for configuration files, preprocessed particle layouts, and timestep outputs instead of scattering path handling and parser logic across modules.
+- CUDA libraries used or considered: No CUDA IO dependency is used. CSV and INI parsing are host-side C++17 standard-library code; VTK output reuses `LegacyVtkWriter`.
+- Memory strategy: The file manager owns only scalar configuration state. CSV particle data is stored in host SoA vectors and is intended to be copied into preallocated device workspaces before the timestep loop.
+- Data layout: Fluid CSV rows use fixed columns `x,y,z,vx,vy,vz`; pressure and surface type are initialized on the host as zero and `Inner`. Wall CSV rows use fixed columns `x,y,z,vx,vy,vz,nx,ny,nz`. Result output keeps fluid and wall VTK files separate with `_fluid` and `_wall` filename suffixes.
+- File format: CSV readers allow one header row, blank lines, and `#` comments. Invalid column counts or values report the input path and line number.
+- Tests: `smoke_file_manager` validates fluid/wall CSV parsing, default field filling, configuration path round-tripping, VTK output routing, and invalid-value rejection.
+- Review notes: The first CSV parser deliberately avoids quoted fields and nested includes because preprocessing files are numeric tables. Large production input can later add binary or VTK/VTU readers behind the same `FileManager` interface.
+
+## Stage 11 Simulation Driver Summary
+
+- Changed: Added the `lsmps3d` executable driver that loads `config/simulation.ini`, reads preprocessed fluid/wall CSV inputs, allocates reusable GPU workspaces, runs neighbor search, surface classification, moment matrix preparation, provision, PPE assembly/solve, pressure correction, dynamic time-step advancement, and VTK result output. The `main.cu` entry point now only handles CLI usage, exception reporting, and dispatch to `run_simulation(...)`; driver helpers live in `app/simulation_driver`.
+- Reason: The individual modules now need one production-facing orchestration path to run a complete flow simulation instead of only module smoke tests and diagnostics.
+- CUDA libraries used or considered: The driver reuses the existing CUDA Runtime module calls plus optional AMGX-backed PPE solve. No new third-party dependency is added.
+- Memory strategy: Particle, neighbor, moment, provision, PPE, correction, and diagnostic buffers are allocated before the time loop and reused. The driver uses fixed first-pass CSR capacities of 256 fluid neighbors and 256 wall neighbors per fluid particle, matching existing reference diagnostics.
+- Data layout: Host CSV data is copied into the existing device SoA workspace. Each output frame copies current SoA fields back to host and writes separate fluid/wall VTK files with velocity, pressure, surface type, pressure-gradient, particle-shift, and wall-normal fields.
+- Grid setup: The driver derives the background cell-list origin and dimensions from the combined fluid/wall particle bounding box after loading CSV input, padded by one support radius in each direction. `cell_size` remains configurable and still must be at least the support radius.
+- Mathematical formulation: The timestep sequence is `neighbor/surface -> u* -> PPE -> pressure correction/particle motion -> neighbor/surface`, with `dt` selected by `SimulationTimeManager` before each physical update from the current maximum velocity.
+- Tests: Build the `lsmps3d` target with CMake. Runtime execution requires valid `input/fluid_particles.csv` and `input/wall_particles.csv` files matching the documented numeric CSV formats.
+- Review notes: Neighbor-list capacities are driver constants in this first executable. Large or denser cases should promote these capacities to configuration after the expected preprocessing envelope is known.
+
+## Hydrostatic Box Preprocessor Summary
+
+- Changed: Added the `generate_hydrostatic_box` host-side tool under `tool/` with its own standalone CMake project. By default it writes `input/fluid_particles.csv` and `input/wall_particles.csv` for a 1 m x 1 m x 1 m box filled to 0.5 m with 0.02 m particle spacing.
+- Reason: The executable simulation driver needs reproducible CSV inputs for the standard hydrostatic validation case instead of relying on test-only in-memory geometry construction.
+- CUDA libraries used or considered: No CUDA dependency is needed because this is a deterministic CPU preprocessor.
+- Memory strategy: The tool builds host vectors once, writes CSV files, and exits; simulation-time GPU allocation remains owned by the driver workspace.
+- Data layout: Fluid CSV rows use `x,y,z,vx,vy,vz` with zero initial velocity. Wall CSV rows use `x,y,z,vx,vy,vz,nx,ny,nz`, with wall normals pointing into the fluid domain.
+- Mathematical formulation: Fluid samples are placed at cell centers `(i + 0.5) dx` for `0 <= z < 0.5 m`. Wall samples lie on the five solid boundary planes of the open-top box at multiples of `dx`; duplicate wall edges and corners are avoided by assigning them to one face sample.
+- Tests: Configured and built `generate_hydrostatic_box`, then ran it to generate 62,500 fluid particles and 12,601 wall particles in `input/`.
+- Review notes: The first tool exposes only an optional output directory argument; geometry constants are fixed to the requested hydrostatic case.

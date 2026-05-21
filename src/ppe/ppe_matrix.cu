@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -550,17 +551,19 @@ void assemble_ppe_matrix_and_rhs(const FluidParticleSoA& fluid,
 }
 
 struct AmgxPpeSolver::Impl {
-  explicit Impl(std::filesystem::path path) : config_path(std::move(path)) {}
+  Impl(std::filesystem::path path, bool print_stats)
+      : config_path(std::move(path)), print_solve_stats(print_stats) {}
 
   std::filesystem::path config_path;
+  bool print_solve_stats{false};
 #if defined(LSMPS3D_ENABLE_AMGX)
   AmgxHandles handles{};
   bool initialized{false};
 #endif
 };
 
-AmgxPpeSolver::AmgxPpeSolver(std::filesystem::path config_path)
-    : impl_(std::make_unique<Impl>(std::move(config_path))) {}
+AmgxPpeSolver::AmgxPpeSolver(std::filesystem::path config_path, bool print_solve_stats)
+    : impl_(std::make_unique<Impl>(std::move(config_path), print_solve_stats)) {}
 
 AmgxPpeSolver::~AmgxPpeSolver() = default;
 
@@ -594,17 +597,19 @@ void AmgxPpeSolver::solve(const CsrMatrixView& matrix, const real* rhs, real* pr
 #if defined(LSMPS3D_ENABLE_AMGX)
   AMGX_initialize();
   const AMGX_Mode mode = amgx_mode();
-  const std::string config_source =
-      impl_->config_path.empty() ? std::string{} : impl_->config_path.string();
-  if (config_source.empty()) {
-    LSMPS3D_AMGX_CHECK(AMGX_config_create(
-        &impl_->handles.config,
-        "config_version=2,solver(preconditioner)=NOSOLVER,preconditioner:scope=amg,"
-        "solver=GMRES,use_scalar_norm=1,print_solve_stats=1,obtain_timings=1,"
-        "monitor_residual=1,convergence=RELATIVE_INI,scope=main,max_iters=100,"
-        "tolerance=1e-6,norm=L2"));
-  } else {
+  if (!impl_->config_path.empty()) {
+    const std::string config_source = impl_->config_path.string();
     LSMPS3D_AMGX_CHECK(AMGX_config_create_from_file(&impl_->handles.config, config_source.c_str()));
+  } else {
+    std::ostringstream config_stream;
+    config_stream << "config_version=2,solver(preconditioner)=NOSOLVER,"
+                  << "preconditioner:scope=amg,solver=GMRES,use_scalar_norm=1,"
+                  << "convergence=RELATIVE_INI,scope=main,max_iters=100,tolerance=1e-6,norm=L2,"
+                  << "solver:print_solve_stats=" << (impl_->print_solve_stats ? 1 : 0) << ','
+                  << "solver:obtain_timings=" << (impl_->print_solve_stats ? 1 : 0) << ','
+                  << "solver:monitor_residual=" << (impl_->print_solve_stats ? 1 : 0);
+    const std::string config_source = config_stream.str();
+    LSMPS3D_AMGX_CHECK(AMGX_config_create(&impl_->handles.config, config_source.c_str()));
   }
   LSMPS3D_AMGX_CHECK(AMGX_resources_create_simple(&impl_->handles.resources, impl_->handles.config));
   LSMPS3D_AMGX_CHECK(AMGX_matrix_create(&impl_->handles.matrix, impl_->handles.resources, mode));

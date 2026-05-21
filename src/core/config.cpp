@@ -154,6 +154,16 @@ void apply_config_value(SimulationConfig& config,
   } else if (section == "simulation") {
     if (key == "time_step") {
       config.time_step = parse_real(full_key, value);
+    } else if (key == "min_time_step") {
+      config.min_time_step = parse_real(full_key, value);
+    } else if (key == "max_time_step") {
+      config.max_time_step = parse_real(full_key, value);
+    } else if (key == "time_step_growth_factor") {
+      config.time_step_growth_factor = parse_real(full_key, value);
+    } else if (key == "final_time") {
+      config.final_time = parse_real(full_key, value);
+    } else if (key == "output_interval") {
+      config.output_interval = parse_real(full_key, value);
     } else if (key == "density") {
       config.density = parse_real(full_key, value);
     } else if (key == "kinematic_viscosity") {
@@ -198,8 +208,27 @@ void apply_config_value(SimulationConfig& config,
       throw std::invalid_argument("Unknown simulation config key '" + full_key + "' on line " +
                                   std::to_string(line_number));
     }
+  } else if (section == "correction") {
+    if (key == "ps_displacement_scale") {
+      config.ps_displacement_scale = parse_real(full_key, value);
+    } else if (key == "ps_min_distance_ratio") {
+      config.ps_min_distance_ratio = parse_real(full_key, value);
+    } else if (key == "ps_max_displacement_ratio") {
+      config.ps_max_displacement_ratio = parse_real(full_key, value);
+    } else if (key == "wall_clearance_ratio") {
+      config.wall_clearance_ratio = parse_real(full_key, value);
+    } else if (key == "velocity_smoothing_strength") {
+      config.velocity_smoothing_strength = parse_real(full_key, value);
+    } else {
+      throw std::invalid_argument("Unknown simulation config key '" + full_key + "' on line " +
+                                  std::to_string(line_number));
+    }
   } else if (section == "files") {
-    if (key == "output_directory") {
+    if (key == "fluid_particle_file") {
+      config.fluid_particle_file = trim(value);
+    } else if (key == "wall_particle_file") {
+      config.wall_particle_file = trim(value);
+    } else if (key == "output_directory") {
       config.output_directory = trim(value);
     } else if (key == "vtk_file_prefix") {
       config.vtk_file_prefix = trim(value);
@@ -230,18 +259,31 @@ void validate_simulation_config(const SimulationConfig& config) {
   require_positive(config.support_radius, "support_radius");
   require_non_negative(config.near_surface_radius, "near_surface_radius");
   require_positive(config.cell_size, "cell_size");
-  require_positive(config.cell_dims.x, "cell_dim_x");
-  require_positive(config.cell_dims.y, "cell_dim_y");
-  require_positive(config.cell_dims.z, "cell_dim_z");
   require_positive(config.time_step, "time_step");
+  require_positive(config.min_time_step, "min_time_step");
+  require_positive(config.max_time_step, "max_time_step");
+  require_positive(config.time_step_growth_factor, "time_step_growth_factor");
+  require_non_negative(config.final_time, "final_time");
+  require_positive(config.output_interval, "output_interval");
   require_positive(config.density, "density");
   require_positive(config.kinematic_viscosity, "kinematic_viscosity");
   require_positive(config.cfl, "cfl");
   require_non_negative(config.lsmps_regularization, "lsmps_regularization");
   require_positive(config.lsmps_wall_weight_scale, "lsmps_wall_weight_scale");
+  require_non_negative(config.ps_displacement_scale, "ps_displacement_scale");
+  require_positive(config.ps_min_distance_ratio, "ps_min_distance_ratio");
+  require_non_negative(config.ps_max_displacement_ratio, "ps_max_displacement_ratio");
+  require_non_negative(config.wall_clearance_ratio, "wall_clearance_ratio");
+  require_non_negative(config.velocity_smoothing_strength, "velocity_smoothing_strength");
 
   if (config.support_radius > config.cell_size) {
     throw std::invalid_argument("SimulationConfig requires support_radius <= cell_size");
+  }
+  if (config.min_time_step > config.max_time_step) {
+    throw std::invalid_argument("SimulationConfig requires min_time_step <= max_time_step");
+  }
+  if (config.time_step_growth_factor < static_cast<real>(1)) {
+    throw std::invalid_argument("SimulationConfig field 'time_step_growth_factor' must be >= 1");
   }
   if (config.number_density_ratio_threshold <= static_cast<real>(0)) {
     throw std::invalid_argument("SimulationConfig field 'number_density_ratio_threshold' must be "
@@ -252,9 +294,19 @@ void validate_simulation_config(const SimulationConfig& config) {
     throw std::invalid_argument("SimulationConfig field 'virtual_light_cone_cosine' must be in "
                                 "[-1, 1]");
   }
+  if (config.velocity_smoothing_strength > static_cast<real>(1)) {
+    throw std::invalid_argument("SimulationConfig field 'velocity_smoothing_strength' must be in "
+                                "[0, 1]");
+  }
 
   if (config.amgx_config_path.empty()) {
     throw std::invalid_argument("SimulationConfig field 'amgx_config_path' must not be empty");
+  }
+  if (config.fluid_particle_file.empty()) {
+    throw std::invalid_argument("SimulationConfig field 'fluid_particle_file' must not be empty");
+  }
+  if (config.wall_particle_file.empty()) {
+    throw std::invalid_argument("SimulationConfig field 'wall_particle_file' must not be empty");
   }
   if (config.vtk_file_prefix.empty()) {
     throw std::invalid_argument("SimulationConfig field 'vtk_file_prefix' must not be empty");
@@ -330,16 +382,15 @@ void save_simulation_config(const SimulationConfig& config, const std::filesyste
   write_real(output, "particle_spacing", config.particle_spacing);
   write_real(output, "support_radius", config.support_radius);
   write_real(output, "near_surface_radius", config.near_surface_radius);
-  write_real(output, "cell_origin_x", config.cell_origin.x);
-  write_real(output, "cell_origin_y", config.cell_origin.y);
-  write_real(output, "cell_origin_z", config.cell_origin.z);
   write_real(output, "cell_size", config.cell_size);
-  write_index(output, "cell_dim_x", config.cell_dims.x);
-  write_index(output, "cell_dim_y", config.cell_dims.y);
-  write_index(output, "cell_dim_z", config.cell_dims.z);
 
   output << "\n[simulation]\n";
   write_real(output, "time_step", config.time_step);
+  write_real(output, "min_time_step", config.min_time_step);
+  write_real(output, "max_time_step", config.max_time_step);
+  write_real(output, "time_step_growth_factor", config.time_step_growth_factor);
+  write_real(output, "final_time", config.final_time);
+  write_real(output, "output_interval", config.output_interval);
   write_real(output, "density", config.density);
   write_real(output, "kinematic_viscosity", config.kinematic_viscosity);
   write_real(output, "cfl", config.cfl);
@@ -362,7 +413,16 @@ void save_simulation_config(const SimulationConfig& config, const std::filesyste
   write_real(output, "regularization", config.lsmps_regularization);
   write_real(output, "wall_weight_scale", config.lsmps_wall_weight_scale);
 
+  output << "\n[correction]\n";
+  write_real(output, "ps_displacement_scale", config.ps_displacement_scale);
+  write_real(output, "ps_min_distance_ratio", config.ps_min_distance_ratio);
+  write_real(output, "ps_max_displacement_ratio", config.ps_max_displacement_ratio);
+  write_real(output, "wall_clearance_ratio", config.wall_clearance_ratio);
+  write_real(output, "velocity_smoothing_strength", config.velocity_smoothing_strength);
+
   output << "\n[files]\n";
+  output << "fluid_particle_file=" << config.fluid_particle_file.string() << '\n';
+  output << "wall_particle_file=" << config.wall_particle_file.string() << '\n';
   output << "output_directory=" << config.output_directory.string() << '\n';
   output << "vtk_file_prefix=" << config.vtk_file_prefix << '\n';
   write_bool(output, "vtk_write_point_fields", config.vtk_write_point_fields);

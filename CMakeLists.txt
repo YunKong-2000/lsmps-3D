@@ -37,6 +37,10 @@ endif()
 
 add_library(lsmps3d_core
   src/core/config.cpp
+  src/core/time_step.cpp
+  src/app/simulation_driver.cu
+  src/io/file_manager.cpp
+  src/correction/pressure_correction.cu
   src/core/runtime.cu
   src/io/vtk_writer.cpp
   src/moment_matrix/moment_matrix.cu
@@ -81,6 +85,10 @@ set_target_properties(lsmps3d_core PROPERTIES
   POSITION_INDEPENDENT_CODE ON
 )
 
+add_executable(lsmps3d src/app/main.cu)
+target_link_libraries(lsmps3d PRIVATE lsmps3d_core)
+set_target_properties(lsmps3d PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
 if(LSMPS3D_BUILD_TESTS)
   enable_testing()
 
@@ -89,6 +97,12 @@ if(LSMPS3D_BUILD_TESTS)
 
   add_executable(smoke_config tests/unit/smoke_config.cpp)
   target_link_libraries(smoke_config PRIVATE lsmps3d_core)
+
+  add_executable(smoke_file_manager tests/unit/smoke_file_manager.cpp)
+  target_link_libraries(smoke_file_manager PRIVATE lsmps3d_core)
+
+  add_executable(smoke_time_step tests/unit/smoke_time_step.cpp)
+  target_link_libraries(smoke_time_step PRIVATE lsmps3d_core)
 
   add_executable(smoke_neighbor_search tests/unit/smoke_neighbor_search.cu)
   target_link_libraries(smoke_neighbor_search PRIVATE lsmps3d_core)
@@ -105,6 +119,9 @@ if(LSMPS3D_BUILD_TESTS)
   add_executable(smoke_ppe_matrix tests/unit/smoke_ppe_matrix.cu)
   target_link_libraries(smoke_ppe_matrix PRIVATE lsmps3d_core)
 
+  add_executable(smoke_pressure_correction tests/unit/smoke_pressure_correction.cu)
+  target_link_libraries(smoke_pressure_correction PRIVATE lsmps3d_core)
+
   add_executable(smoke_vtk_writer tests/unit/smoke_vtk_writer.cpp)
   target_link_libraries(smoke_vtk_writer PRIVATE lsmps3d_core)
 
@@ -119,10 +136,13 @@ if(LSMPS3D_BUILD_TESTS)
 
   add_test(NAME smoke_particle_copy COMMAND smoke_particle_copy)
   add_test(NAME smoke_config COMMAND smoke_config)
+  add_test(NAME smoke_file_manager COMMAND smoke_file_manager)
+  add_test(NAME smoke_time_step COMMAND smoke_time_step)
   add_test(NAME smoke_neighbor_search COMMAND smoke_neighbor_search)
   add_test(NAME smoke_surface_detection COMMAND smoke_surface_detection)
   add_test(NAME smoke_moment_matrix COMMAND smoke_moment_matrix)
   add_test(NAME smoke_provision_explicit_update COMMAND smoke_provision_explicit_update)
   add_test(NAME smoke_ppe_matrix COMMAND smoke_ppe_matrix)
+  add_test(NAME smoke_pressure_correction COMMAND smoke_pressure_correction)
   add_test(NAME smoke_vtk_writer COMMAND smoke_vtk_writer)
 endif()

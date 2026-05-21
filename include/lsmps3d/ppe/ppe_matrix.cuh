@@ -98,7 +98,7 @@ class DevicePpeMatrixAssembler {
 
 class AmgxPpeSolver {
  public:
-  explicit AmgxPpeSolver(std::filesystem::path config_path = {});
+  explicit AmgxPpeSolver(std::filesystem::path config_path = {}, bool print_solve_stats = false);
   ~AmgxPpeSolver();
 
   AmgxPpeSolver(const AmgxPpeSolver&) = delete;

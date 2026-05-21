@@ -363,6 +363,7 @@ __global__ void compute_pressure_operator_kernel(const lsmps3d::FluidParticleSoA
                                                  const lsmps3d::NeighborListView fluid_neighbors,
                                                  const lsmps3d::NeighborListView wall_neighbors,
                                                  lsmps3d::MomentMatrixView pressure_moment,
+                                                 const lsmps3d::real* pressure,
                                                  lsmps3d::real density,
                                                  lsmps3d::Vec3 gravity,
                                                  lsmps3d::real* gradient_x,
@@ -396,7 +397,7 @@ __global__ void compute_pressure_operator_kernel(const lsmps3d::FluidParticleSoA
     }
     lsmps3d::real basis[kBasisSize]{};
     type_a_basis(dx, dy, dz, support_radius, basis);
-    const lsmps3d::real delta_pressure = fluid.pressure[j] - fluid.pressure[i];
+    const lsmps3d::real delta_pressure = pressure[j] - pressure[i];
     for (int row = 0; row < kBasisSize; ++row) {
       rhs[row] += weight * basis[row] * delta_pressure;
     }
@@ -447,6 +448,7 @@ void compute_pressure_operator(const lsmps3d::FluidParticleSoA& fluid,
                                const lsmps3d::NeighborListView& fluid_neighbors,
                                const lsmps3d::NeighborListView& wall_neighbors,
                                const lsmps3d::MomentMatrixView& pressure_moment,
+                               const lsmps3d::real* pressure,
                                const lsmps3d::SimulationConfig& config,
                                lsmps3d::FluidParticleSoA output) {
   if (!pressure_moment.is_ready ||
@@ -459,9 +461,10 @@ void compute_pressure_operator(const lsmps3d::FluidParticleSoA& fluid,
   if (fluid.count == 0) {
     return;
   }
-  if (output.x == nullptr || output.y == nullptr || output.z == nullptr ||
+  if (pressure == nullptr || output.x == nullptr || output.y == nullptr || output.z == nullptr ||
       output.pressure == nullptr) {
-    throw std::runtime_error("pressure operator diagnostics require gradient and laplacian buffers");
+    throw std::runtime_error(
+        "pressure operator diagnostics require pressure, gradient and laplacian buffers");
   }
 
   constexpr int kThreadsPerBlock = 128;
@@ -471,6 +474,7 @@ void compute_pressure_operator(const lsmps3d::FluidParticleSoA& fluid,
                                                                  fluid_neighbors,
                                                                  wall_neighbors,
                                                                  pressure_moment,
+                                                                 pressure,
                                                                  config.density,
                                                                  config.gravity,
                                                                  output.x,
@@ -587,15 +591,6 @@ int main(int argc, char** argv) {
 
   lsmps3d::DeviceMomentMatrix lsmps(fluid_count, config);
   lsmps.prepare_matrices(view.fluid, view.walls, view.fluid_neighbors, view.wall_neighbors, 1);
-  lsmps3d::DeviceFluidParticles pressure_operator_buffers(fluid_count);
-  auto pressure_operator_view = pressure_operator_buffers.view();
-  compute_pressure_operator(view.fluid,
-                            view.walls,
-                            view.fluid_neighbors,
-                            view.wall_neighbors,
-                            lsmps.pressure_type_a(),
-                            config,
-                            pressure_operator_view);
 
   lsmps3d::DeviceFluidParticles temporary_velocity(fluid_count);
   lsmps3d::DeviceWallParticles temporary_wall_velocity(wall_count);
@@ -630,6 +625,21 @@ int main(int argc, char** argv) {
   } else {
     LSMPS3D_CUDA_CHECK(cudaMemset(ppe_workspace.pressure, 0, fluid_count * sizeof(lsmps3d::real)));
   }
+
+  LSMPS3D_CUDA_CHECK(cudaMemcpy(view.fluid.pressure,
+                                ppe_workspace.pressure,
+                                fluid_count * sizeof(lsmps3d::real),
+                                cudaMemcpyDeviceToDevice));
+  lsmps3d::DeviceFluidParticles pressure_operator_buffers(fluid_count);
+  auto pressure_operator_view = pressure_operator_buffers.view();
+  compute_pressure_operator(view.fluid,
+                            view.walls,
+                            view.fluid_neighbors,
+                            view.wall_neighbors,
+                            lsmps.pressure_type_a(),
+                            ppe_workspace.pressure,
+                            config,
+                            pressure_operator_view);
 
   lsmps3d::HostParticleSnapshot particles{
       hydrostatic.fluid_x,
@@ -697,14 +707,14 @@ int main(int argc, char** argv) {
   point_fields.add_scalar("wall_neighbor_count",
                           std::vector<int>(wall_neighbor_count.begin(), wall_neighbor_count.end()));
   point_fields.add_scalar("hydrostatic_pressure", hydrostatic_pressure);
-  point_fields.add_scalar("pressure_gradient_x", pressure_gradient_x);
-  point_fields.add_scalar("pressure_gradient_y", pressure_gradient_y);
-  point_fields.add_scalar("pressure_gradient_z", pressure_gradient_z);
-  point_fields.add_scalar("pressure_laplacian", pressure_laplacian);
-  point_fields.add_scalar("pressure_gradient_x_abs_error", pressure_gradient_x_abs_error);
-  point_fields.add_scalar("pressure_gradient_y_abs_error", pressure_gradient_y_abs_error);
-  point_fields.add_scalar("pressure_gradient_z_abs_error", pressure_gradient_z_abs_error);
-  point_fields.add_scalar("pressure_laplacian_abs_error", pressure_laplacian_abs_error);
+  point_fields.add_scalar("ppe_pressure_gradient_x", pressure_gradient_x);
+  point_fields.add_scalar("ppe_pressure_gradient_y", pressure_gradient_y);
+  point_fields.add_scalar("ppe_pressure_gradient_z", pressure_gradient_z);
+  point_fields.add_scalar("ppe_pressure_laplacian", pressure_laplacian);
+  point_fields.add_scalar("ppe_pressure_gradient_x_abs_error", pressure_gradient_x_abs_error);
+  point_fields.add_scalar("ppe_pressure_gradient_y_abs_error", pressure_gradient_y_abs_error);
+  point_fields.add_scalar("ppe_pressure_gradient_z_abs_error", pressure_gradient_z_abs_error);
+  point_fields.add_scalar("ppe_pressure_laplacian_abs_error", pressure_laplacian_abs_error);
   point_fields.add_scalar("ppe_pressure", ppe_pressure);
   point_fields.add_scalar("ppe_pressure_error", ppe_pressure_error);
   point_fields.add_scalar("ppe_pressure_abs_error", ppe_pressure_abs_error);
@@ -786,9 +796,9 @@ int main(int argc, char** argv) {
             << "  Top-layer Surface particles: " << top_layer_surface_count << '\n'
             << "  Below-top Surface particles: " << below_top_surface_count << '\n'
             << "  Hydrostatic pressure max: " << max_value(hydrostatic_pressure) << " Pa\n"
-            << "  Pressure gradient z max abs error: "
+            << "  PPE pressure gradient z max abs error: "
             << max_value(pressure_gradient_z_abs_error) << " Pa/m\n"
-            << "  Pressure laplacian max abs error: "
+            << "  PPE pressure laplacian max abs error: "
             << max_value(pressure_laplacian_abs_error) << " Pa/m^2\n"
             << "  PPE A*p_true-b max abs: "
             << max_value(absolute_values(ppe_residual_diagnostics.residual)) << '\n'
