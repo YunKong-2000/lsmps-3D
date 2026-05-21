@@ -8,8 +8,20 @@ project(
 
 option(LSMPS3D_BUILD_TESTS "Build LSMPS3D tests" ON)
 option(LSMPS3D_USE_DOUBLE "Use double precision for lsmps3d::real" ON)
+option(LSMPS3D_ENABLE_AMGX "Enable AMGX-backed PPE pressure solves" ON)
 
 find_package(CUDAToolkit REQUIRED)
+find_path(AMGX_INCLUDE_DIR amgx_c.h)
+find_library(AMGX_LIBRARY NAMES amgxsh amgx)
+
+if(LSMPS3D_ENABLE_AMGX AND AMGX_INCLUDE_DIR AND AMGX_LIBRARY)
+  set(LSMPS3D_HAVE_AMGX ON)
+else()
+  set(LSMPS3D_HAVE_AMGX OFF)
+  if(LSMPS3D_ENABLE_AMGX)
+    message(STATUS "AMGX was requested but not found; building PPE assembly with AMGX solver stub")
+  endif()
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,8 +39,10 @@ add_library(lsmps3d_core
   src/core/config.cpp
   src/core/runtime.cu
   src/io/vtk_writer.cpp
-  src/lsmps/moment_matrix.cu
+  src/moment_matrix/moment_matrix.cu
   src/neighbor/neighbor_search.cu
+  src/ppe/ppe_matrix.cu
+  src/provision/explicit_update.cu
   src/surface/surface_detection.cu
 )
 
@@ -50,6 +64,12 @@ target_link_libraries(lsmps3d_core
     CUDA::cublas
     CUDA::cusolver
 )
+
+if(LSMPS3D_HAVE_AMGX)
+  target_include_directories(lsmps3d_core PUBLIC ${AMGX_INCLUDE_DIR})
+  target_link_libraries(lsmps3d_core PUBLIC ${AMGX_LIBRARY})
+  target_compile_definitions(lsmps3d_core PUBLIC LSMPS3D_ENABLE_AMGX)
+endif()
 
 target_compile_options(lsmps3d_core
   PRIVATE
@@ -76,8 +96,14 @@ if(LSMPS3D_BUILD_TESTS)
   add_executable(smoke_surface_detection tests/unit/smoke_surface_detection.cu)
   target_link_libraries(smoke_surface_detection PRIVATE lsmps3d_core)
 
-  add_executable(smoke_lsmps_moment_matrix tests/unit/smoke_lsmps_moment_matrix.cu)
-  target_link_libraries(smoke_lsmps_moment_matrix PRIVATE lsmps3d_core)
+  add_executable(smoke_moment_matrix tests/unit/smoke_moment_matrix.cu)
+  target_link_libraries(smoke_moment_matrix PRIVATE lsmps3d_core)
+
+  add_executable(smoke_provision_explicit_update tests/unit/smoke_provision_explicit_update.cu)
+  target_link_libraries(smoke_provision_explicit_update PRIVATE lsmps3d_core)
+
+  add_executable(smoke_ppe_matrix tests/unit/smoke_ppe_matrix.cu)
+  target_link_libraries(smoke_ppe_matrix PRIVATE lsmps3d_core)
 
   add_executable(smoke_vtk_writer tests/unit/smoke_vtk_writer.cpp)
   target_link_libraries(smoke_vtk_writer PRIVATE lsmps3d_core)
@@ -95,6 +121,8 @@ if(LSMPS3D_BUILD_TESTS)
   add_test(NAME smoke_config COMMAND smoke_config)
   add_test(NAME smoke_neighbor_search COMMAND smoke_neighbor_search)
   add_test(NAME smoke_surface_detection COMMAND smoke_surface_detection)
-  add_test(NAME smoke_lsmps_moment_matrix COMMAND smoke_lsmps_moment_matrix)
+  add_test(NAME smoke_moment_matrix COMMAND smoke_moment_matrix)
+  add_test(NAME smoke_provision_explicit_update COMMAND smoke_provision_explicit_update)
+  add_test(NAME smoke_ppe_matrix COMMAND smoke_ppe_matrix)
   add_test(NAME smoke_vtk_writer COMMAND smoke_vtk_writer)
 endif()

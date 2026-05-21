@@ -8,7 +8,7 @@
 #include "lsmps3d/core/cuda_check.cuh"
 #include "lsmps3d/core/workspace.cuh"
 #include "lsmps3d/io/vtk_writer.hpp"
-#include "lsmps3d/lsmps/moment_matrix.cuh"
+#include "lsmps3d/moment_matrix/moment_matrix.cuh"
 #include "lsmps3d/neighbor/neighbor_search.cuh"
 
 namespace {
@@ -49,15 +49,6 @@ std::vector<lsmps3d::real> magnitude(const std::vector<lsmps3d::real>& x,
   std::vector<lsmps3d::real> out(x.size());
   for (std::size_t i = 0; i < x.size(); ++i) {
     out[i] = std::sqrt(x[i] * x[i] + y[i] * y[i] + z[i] * z[i]);
-  }
-  return out;
-}
-
-std::vector<lsmps3d::real> absolute_error(const std::vector<lsmps3d::real>& actual,
-                                          const std::vector<lsmps3d::real>& expected) {
-  std::vector<lsmps3d::real> out(actual.size());
-  for (std::size_t i = 0; i < actual.size(); ++i) {
-    out[i] = std::abs(actual[i] - expected[i]);
   }
   return out;
 }
@@ -192,39 +183,8 @@ int main(int argc, char** argv) {
                                 view.fluid_neighbors,
                                 view.wall_neighbors);
 
-  lsmps3d::DeviceFluidParticles operator_buffers(fluid_count);
-  auto operator_view = operator_buffers.view();
-
-  lsmps3d::DeviceLsmpsOperators lsmps(fluid_count, config);
-  lsmps.prepare_matrices(view.fluid, view.walls, view.fluid_neighbors, view.wall_neighbors, 1);
-  lsmps.compute_velocity_gradient(
-      view.fluid,
-      view.walls,
-      view.fluid_neighbors,
-      view.wall_neighbors,
-      view.fluid.vx,
-      view.walls.vx,
-      operator_view.x,
-      operator_view.y,
-      operator_view.z);
-  lsmps.compute_velocity_laplacian(view.fluid,
-                                   view.walls,
-                                   view.fluid_neighbors,
-                                   view.wall_neighbors,
-                                   view.fluid.vx,
-                                   view.walls.vx,
-                                   operator_view.pressure);
-
-  const auto gradient_x = copy_from_device(operator_view.x, fluid_count);
-  const auto gradient_y = copy_from_device(operator_view.y, fluid_count);
-  const auto gradient_z = copy_from_device(operator_view.z, fluid_count);
-  const auto laplacian = copy_from_device(operator_view.pressure, fluid_count);
-  const auto gradient_magnitude = magnitude(gradient_x, gradient_y, gradient_z);
   const auto analytic_gradient_magnitude =
       magnitude(pipe.analytic_grad_x, pipe.analytic_grad_y, pipe.analytic_grad_z);
-  const auto gradient_y_error = absolute_error(gradient_y, pipe.analytic_grad_y);
-  const auto gradient_z_error = absolute_error(gradient_z, pipe.analytic_grad_z);
-  const auto laplacian_error = absolute_error(laplacian, pipe.analytic_laplacian);
 
   lsmps3d::HostParticleSnapshot particles{
       pipe.fluid_x,
@@ -233,15 +193,9 @@ int main(int argc, char** argv) {
   };
   lsmps3d::HostVtkPointFields point_fields;
   point_fields.add_scalar("velocity_x", pipe.velocity_x);
-  point_fields.add_scalar("velocity_gradient_magnitude", gradient_magnitude);
   point_fields.add_scalar("analytic_velocity_gradient_magnitude", analytic_gradient_magnitude);
-  point_fields.add_scalar("velocity_laplacian", laplacian);
   point_fields.add_scalar("analytic_velocity_laplacian", pipe.analytic_laplacian);
-  point_fields.add_scalar("velocity_gradient_y_error", gradient_y_error);
-  point_fields.add_scalar("velocity_gradient_z_error", gradient_z_error);
-  point_fields.add_scalar("velocity_laplacian_error", laplacian_error);
   point_fields.add_vector("velocity", pipe.velocity_x, std::vector<lsmps3d::real>(fluid_count), std::vector<lsmps3d::real>(fluid_count));
-  point_fields.add_vector("velocity_gradient", gradient_x, gradient_y, gradient_z);
   point_fields.add_vector(
       "analytic_velocity_gradient", pipe.analytic_grad_x, pipe.analytic_grad_y, pipe.analytic_grad_z);
 

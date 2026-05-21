@@ -57,17 +57,37 @@
 - Tests: `smoke_vtk_writer` validates generated legacy VTK structure, dynamic scalar/vector fields, deterministic file naming, and mismatched field-length rejection.
 - Review notes: This first writer targets ASCII debug output for small and medium checkpoints. Large production output should add binary VTK/VTP or batched writer support later.
 
-## Stage 5 LSMPS Operator Summary
+## Stage 5 Moment Matrix Summary
 
-- Changed: Simplified 3D LSMPS into a fixed-flow `DeviceLsmpsOperators` manager. The manager owns all pressure/velocity matrix caches and RHS/solve workspaces, then exposes only concrete pressure and velocity operator methods to callers.
-- Reason: Provision, PPE assembly, and pressure correction should not manually manage M caches, RHS workspaces, or basis coefficient indices. In this project the LSMPS usage is fixed, so the module now prioritizes practical operator calls over a generic least-squares pipeline.
-- CUDA libraries used or considered: cuSOLVER batched Cholesky (`potrfBatched`/`potrsBatched`) factors and solves the regularized normal equations. cuBLAS is linked and remains the available LU batched fallback path if a later operator uses non-SPD systems; CUDA Runtime kernels assemble per-particle dense matrices and RHS vectors from CSR neighbors.
-- Memory strategy: `DeviceLsmpsOperators` allocates fixed internal resources once: `VelocityWallDirichletTypeA`, `PressureWallNeumannTypeA`, `PressureWallNeumannTypeB`, and optional `FluidOnlyTypeA` matrix caches plus three reusable RHS/solution workspaces. `prepare_matrices(...)` factors the fixed caches for a `geometry_generation`; repeated calls with the same generation reuse the cached factors.
-- Data layout: Particle inputs remain SoA plus separate fluid and wall CSR lists. RHS vectors, solved coefficients, matrix factors, and batched pointers are internal buffers; callers only provide scalar/vector field arrays and receive gradient, divergence, or laplacian arrays.
-- Mathematical formulation: Matrix assembly uses `M_i += w_ij p_ij p_ij^T` for fluid and Dirichlet wall samples, or `N_i += w_ij^B q_ij q_ij^T` for pressure Neumann wall constraints. RHS assembly is now owned by each physical operator: velocity operators apply wall Dirichlet samples, and pressure operators apply Neumann wall terms `w_ij^B q_ij (r_s rho g . n_j)`. Here `r_s = support_radius`.
-- Tests: `smoke_lsmps_moment_matrix` builds a 27-point 3D stencil, verifies `DeviceLsmpsOperators` reuse across repeated `prepare_matrices(...)`, checks near-surface pressure gradient, pressure laplacian, velocity divergence, and pressure-Neumann gradient behavior. Hydrostatic and pipe-flow diagnostics use the same unified manager and write VTK fields for analytical inspection.
-- Reuse policy: PPE pressure laplacian and ordinary correction pressure gradient use the manager's `PressureWallNeumannTypeA` cache because PPE solve does not move particles. Near-free-surface pressure gradient uses `PressureWallNeumannTypeB`. Provision viscosity uses `VelocityWallDirichletTypeA` with `compute_velocity_laplacian`, while PPE RHS uses the same velocity cache with `compute_velocity_divergence`.
-- Review notes: The first cache implementation stores whole-fluid matrices for each strategy. Future optimization can compact particle subsets, so only near-free-surface particles pay for Type-B caches and solve batches.
+- Changed: Renamed the LSMPS operator module to `moment_matrix`. `DeviceMomentMatrix` now owns only prepared moment inverse matrices and exposes read-only `MomentMatrixView` objects for consuming modules.
+- Reason: Provision, PPE assembly, and pressure correction should own their physical operator discretization. The shared module now prepares geometry-dependent $M^{-1}$ data once and does not compute gradients, divergence, or laplacians itself.
+- CUDA libraries used or considered: CUDA Runtime kernels assemble per-particle dense moment matrices. cuSOLVER batched Cholesky factors each matrix and solves against identity RHS columns to store explicit `M^{-1}`.
+- Memory strategy: `DeviceMomentMatrix` allocates `VelocityWallDirichletTypeA`, `PressureWallNeumannTypeA`, `PressureWallNeumannTypeB`, and `FluidOnlyTypeA` caches. Each cache keeps a factorization scratch matrix, an explicit inverse matrix, batched pointer arrays, and diagnostics.
+- Data layout: Particle inputs remain SoA plus separate fluid and wall CSR lists. Consumers receive `MomentMatrixView` with contiguous per-particle inverse matrices and metadata.
+- Mathematical formulation: Matrix assembly uses `M_i += w_ij p_ij p_ij^T` for fluid and Dirichlet wall samples, or `N_i += w_ij^B q_ij q_ij^T` for pressure Neumann wall constraints. Consumers form their RHS locally and multiply by `M_i^{-1}`.
+- Tests: `smoke_moment_matrix` builds a 27-point 3D stencil, verifies repeated `prepare_matrices(...)` reuse, checks all public views, and copies a representative inverse matrix to validate finite values.
+
+## Stage 6 Provision Explicit Update Summary
+
+- Changed: Added the provision module for temporary velocity prediction from explicit viscosity and gravity.
+- Reason: The solver needs `u*` before PPE assembly and pressure correction, while particle position updates remain deferred to later correction stages.
+- CUDA libraries used or considered: The module consumes `DeviceMomentMatrix::velocity_type_a()` and uses CUDA Runtime kernels to build velocity RHS vectors, multiply by prepared `M^{-1}`, extract laplacians, and combine the explicit update.
+- Memory strategy: `DeviceProvisionExplicitUpdate` owns one reusable `DeviceProvisionWorkspace` with three fluid laplacian arrays and three wall temporary velocity arrays (`vx/vy/vz`). No allocation occurs inside the per-component combine kernels.
+- Data layout: Fluid, wall, laplacian, and temporary velocity fields all use SoA arrays. Fluid and wall temporary velocities are caller-owned so later PPE and correction modules can decide how to retain or swap them.
+- Mathematical formulation: For non-splash fluid particles the predictor applies `u*_f = u_f + dt * (nu * Laplacian(u_f) + g)` component-wise. Splash particles keep gravity but skip viscosity. Wall temporary samples use `u*_w = u_w + dt * g` for consistent near-wall `div(u*)` evaluation; this does not advance wall positions or replace prescribed wall motion.
+- Tests: `smoke_provision_explicit_update` verifies the x-velocity predictor against an analytical quadratic laplacian, checks gravity-only y/z updates, validates splash viscosity skipping, checks wall temporary velocity samples, and checks workspace byte accounting.
+- Review notes: Wall repulsive acceleration for splash particles is still a later extension because wall contact/collision policy belongs with the correction and anti-penetration stages.
+
+## Stage 7 PPE CSR And AMGX GMRES Summary
+
+- Changed: Added PPE CSR workspace ownership, unified GPU CSR/RHS assembly from prepared moment inverse matrices, and an `AmgxPpeSolver` wrapper configured for GMRES. CMake now detects AMGX optionally and keeps PPE assembly buildable when AMGX is not installed.
+- Reason: Pressure projection needs a global non-symmetric sparse system after the provision step, while AMGX availability should remain deployment-dependent instead of blocking module development.
+- CUDA libraries used or considered: CUDA Runtime kernels assemble CSR rows and RHS values. AMGX GMRES is used when `amgx_c.h` and `libamgx`/`libamgxsh` are available, with the default configuration based on the official AMGX `GMRES.json` sample; otherwise the solver wrapper reports that AMGX is not enabled. cuSPARSE remains a possible future fallback for custom iterative solvers but is not used in this stage.
+- Memory strategy: `DevicePpeWorkspace` owns reusable `row_offsets`, `col_indices`, `values`, `rhs`, `pressure`, `divergence`, and diagnostic laplacian buffers. Matrix capacity is allocated up front, while each assembly sets the active `nnz` before solver upload.
+- Data layout: The PPE matrix uses general CSR storage for a non-symmetric sparse operator, with one diagonal entry plus one off-diagonal slot for every fluid-fluid neighbor row. Geometry, temporary velocity, pressure, and diagnostics remain SoA arrays.
+- Mathematical formulation: The RHS is `b_i = rho / dt * div(u*)` for non-free-surface particles and zero for `Surface`/`Splash` Dirichlet rows. The divergence operator uses fixed fluid/wall geometry but samples `u*_f` for fluid neighbors and `u*_w` for wall Dirichlet values, avoiding artificial near-wall divergence in hydrostatic prediction. The first matrix stencil uses weighted graph-Laplacian-style coefficients `A_ij = -2 V w_ij / h^2`, `A_ii = sum_j -A_ij + epsilon`, with linear kernel `w_ij = max(0, 1 - |r_ij| / h)`, but the solver path treats the assembled PPE matrix as a general non-symmetric CSR system.
+- Tests: `smoke_ppe_matrix` validates CSR offsets, active nnz, free-surface Dirichlet rows, LSMPS divergence-driven RHS from explicit temporary velocity inputs, row conservation, GMRES configuration, AMGX wrapper availability, and workspace byte accounting.
+- Review notes: The first PPE stencil is a conservative sparse projection scaffold. Later pressure-correction validation should tune the Laplacian coefficients against the selected LSMPS pressure operator and expand boundary treatment for wall Neumann terms without assuming matrix symmetry.
 
 ## Unified Configuration Summary
 
